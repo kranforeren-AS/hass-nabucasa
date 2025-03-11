@@ -1,4 +1,5 @@
 """Module to handle Google Report State."""
+
 from __future__ import annotations
 
 import asyncio
@@ -64,14 +65,14 @@ class GoogleReportState(iot_base.BaseIoT):
         # Since connect is async, guard against send_message called twice in parallel.
         async with self._connect_lock:
             if self.state == iot_base.STATE_DISCONNECTED:
-                self.cloud.run_task(self.connect())
+                asyncio.create_task(self.connect())
                 # Give connect time to start up and change state.
                 await asyncio.sleep(0)
 
         if self._to_send.full():
             discard_msg = self._to_send.get_nowait()
             self._response_handler.pop(discard_msg["msgid"]).set_exception(
-                ErrorResponse(ERR_DISCARD_CODE, ERR_DISCARD_MSG)
+                ErrorResponse(ERR_DISCARD_CODE, ERR_DISCARD_MSG),
             )
 
         fut = self._response_handler[msgid] = asyncio.Future()
@@ -90,7 +91,7 @@ class GoogleReportState(iot_base.BaseIoT):
         if response_handler is not None:
             if "error" in msg:
                 response_handler.set_exception(
-                    ErrorResponse(msg["error"], msg["message"])
+                    ErrorResponse(msg["error"], msg["message"]),
                 )
             else:
                 response_handler.set_result(msg.get("payload"))
@@ -100,7 +101,7 @@ class GoogleReportState(iot_base.BaseIoT):
 
     async def _async_on_connect(self) -> None:
         """On Connect handler."""
-        self._message_sender_task = self.cloud.run_task(self._async_message_sender())
+        self._message_sender_task = asyncio.create_task(self._async_message_sender())
 
     async def _async_on_disconnect(self) -> None:
         """On disconnect handler."""

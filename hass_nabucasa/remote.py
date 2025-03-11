@@ -1,4 +1,5 @@
 """Manage remote UI connections."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 import logging
 import random
-import ssl
+from ssl import SSLContext, SSLError
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
@@ -18,10 +19,11 @@ from snitun.utils.aes import generate_aes_keyset
 from snitun.utils.aiohttp_client import SniTunClientAioHttp
 
 from . import cloud_api, const, utils
-from .acme import AcmeClientError, AcmeHandler
+from .acme import AcmeClientError, AcmeHandler, AcmeJWSVerificationError
 
 if TYPE_CHECKING:
     from . import Cloud, _ClientT
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,7 +114,7 @@ class RemoteUI:
         """Start remote UI loop."""
         if self.cloud.subscription_expired:
             return
-        self._acme_task = self.cloud.run_task(self._certificate_handler())
+        self._acme_task = asyncio.create_task(self._certificate_handler())
         await self._info_loaded.wait()
 
     async def stop(self) -> None:
@@ -167,7 +169,7 @@ class RemoteUI:
             alternative_names=self._acme.alternative_names,
         )
 
-    async def _create_context(self) -> ssl.SSLContext:
+    async def _create_context(self) -> SSLContext:
         """Create SSL context with acme certificate."""
         context = utils.server_context_modern()
 
@@ -202,7 +204,7 @@ class RemoteUI:
             async with async_timeout.timeout(30):
                 resp = await cloud_api.async_remote_register(self.cloud)
             resp.raise_for_status()
-        except (asyncio.TimeoutError, aiohttp.ClientError) as err:
+        except (TimeoutError, aiohttp.ClientError) as err:
             msg = "Can't update remote details from Home Assistant cloud"
             if isinstance(err, aiohttp.ClientResponseError):
                 msg += f" ({err.status})"  # pylint: disable=no-member
@@ -243,14 +245,16 @@ class RemoteUI:
         ):
             for alias in self.alias or []:
                 if not await self._custom_domain_dns_configuration_is_valid(
-                    instance_domain, alias
+                    instance_domain,
+                    alias,
                 ):
                     domains.remove(alias)
 
         if ca_domains != set(domains):
             if ca_domains:
                 _LOGGER.warning(
-                    "Invalid certificate found for: (%s)", ",".join(ca_domains)
+                    "Invalid certificate found for: (%s)",
+                    ",".join(ca_domains),
                 )
             await self._recreate_acme(domains, email)
 
@@ -262,7 +266,9 @@ class RemoteUI:
             try:
                 self._certificate_status = CertificateStatus.GENERATING
                 await self._acme.issue_certificate()
-            except AcmeClientError:
+            except (AcmeJWSVerificationError, AcmeClientError) as err:
+                if isinstance(err, AcmeJWSVerificationError):
+                    await self._recreate_acme(domains, email)
                 self.cloud.client.user_message(
                     "cloud_remote_acme",
                     "Home Assistant Cloud",
@@ -285,12 +291,24 @@ class RemoteUI:
             _LOGGER.debug("Waiting for aiohttp runner to come available")
 
             # aiohttp_runner comes available when Home Assistant has started.
-            while self.cloud.client.aiohttp_runner is None:
+            while self.cloud.client.aiohttp_runner is None:  # noqa: ASYNC110
                 await asyncio.sleep(1)
+
+        try:
+            context = await self._create_context()
+        except SSLError as err:
+            if err.reason == "KEY_VALUES_MISMATCH":
+                self.cloud.client.user_message(
+                    "cloud_remote_acme",
+                    "Home Assistant Cloud",
+                    const.MESSAGE_LOAD_CERTIFICATE_FAILURE,
+                )
+                await self._recreate_acme(domains, email)
+            self._certificate_status = CertificateStatus.ERROR
+            return False
 
         # Setup snitun / aiohttp wrapper
         _LOGGER.debug("Initializing SniTun")
-        context = await self._create_context()
         self._snitun = SniTunClientAioHttp(
             self.cloud.client.aiohttp_runner,
             context,
@@ -304,11 +322,12 @@ class RemoteUI:
         self.cloud.client.dispatcher_message(const.DISPATCH_REMOTE_BACKEND_UP)
 
         _LOGGER.debug(
-            "Connecting remote backend: %s", self.cloud.client.remote_autostart
+            "Connecting remote backend: %s",
+            self.cloud.client.remote_autostart,
         )
         # Connect to remote is autostart enabled
         if self.cloud.client.remote_autostart:
-            self.cloud.run_task(self.connect())
+            asyncio.create_task(self.connect())
 
         return True
 
@@ -335,7 +354,7 @@ class RemoteUI:
 
         self.cloud.client.dispatcher_message(const.DISPATCH_REMOTE_BACKEND_DOWN)
 
-    async def handle_connection_requests(self, caller_ip: str) -> None:
+    async def handle_connection_requests(self, caller_ip: str) -> None:  # noqa: ARG002
         """Handle connection requests."""
         if not self._snitun:
             raise RemoteNotConnected("Can't handle request-connection without backend")
@@ -351,7 +370,7 @@ class RemoteUI:
             return
 
         if self.cloud.subscription_expired:
-            raise SubscriptionExpired()
+            raise SubscriptionExpired
 
         # Generate session token
         aes_key, aes_iv = generate_aes_keyset()
@@ -359,16 +378,16 @@ class RemoteUI:
             async with async_timeout.timeout(30):
                 resp = await cloud_api.async_remote_token(self.cloud, aes_key, aes_iv)
                 if resp.status == 409:
-                    raise RemoteInsecureVersion()
+                    raise RemoteInsecureVersion
                 if resp.status == 403:
                     msg = ""
                     if "application/json" in (resp.content_type or ""):
                         msg = (await resp.json()).get("message", "")
                     raise RemoteForbidden(msg)
                 if resp.status not in (200, 201):
-                    raise RemoteBackendError()
-        except (asyncio.TimeoutError, aiohttp.ClientError):
-            raise RemoteBackendError() from None
+                    raise RemoteBackendError
+        except (TimeoutError, aiohttp.ClientError):
+            raise RemoteBackendError from None
 
         data = await resp.json()
         self._token = SniTunToken(
@@ -409,14 +428,12 @@ class RemoteUI:
             _LOGGER.debug("Connected")
 
             self.cloud.client.dispatcher_message(const.DISPATCH_REMOTE_CONNECT)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.error("Timeout connecting to snitun server")
         except SniTunConnectionError as err:
-            can_reconnect = self._snitun and not self._reconnect_task
             _LOGGER.log(
-                logging.INFO if can_reconnect else logging.ERROR,
-                "Connection problem to snitun server%s (%s)",
-                ", reconnecting" if can_reconnect else "",
+                logging.ERROR if self._reconnect_task is not None else logging.INFO,
+                "Connection problem to snitun server (%s)",
                 err,
             )
         except RemoteBackendError:
@@ -428,7 +445,9 @@ class RemoteUI:
             self.cloud.client.user_message(
                 "connect_remote_insecure",
                 "Home Assistant Cloud error",
-                "Remote connection is disabled because this Home Assistant instance is marked as insecure. For more information and to enable it again, visit the [Nabu Casa Account page](https://account.nabucasa.com).",
+                "Remote connection is disabled because this Home Assistant instance "
+                "is marked as insecure. For more information and to enable it again, "
+                "visit the [Nabu Casa Account page](https://account.nabucasa.com).",
             )
             insecure = True
         except SubscriptionExpired:
@@ -442,11 +461,11 @@ class RemoteUI:
                 and not self._reconnect_task
                 and not (insecure or forbidden)
             ):
-                self._reconnect_task = self.cloud.run_task(self._reconnect_snitun())
+                self._reconnect_task = asyncio.create_task(self._reconnect_snitun())
 
             # Disconnect if the instance is mark as insecure and we're in reconnect mode
             elif self._reconnect_task and (insecure or forbidden):
-                self.cloud.run_task(self.disconnect())
+                asyncio.create_task(self.disconnect())
 
     async def disconnect(self, clear_snitun_token: bool = False) -> None:
         """Disconnect from snitun server."""
@@ -540,12 +559,14 @@ class RemoteUI:
         """Get CNAME records for hostname."""
         try:
             return await cloud_api.async_resolve_cname(self.cloud, hostname)
-        except (asyncio.TimeoutError, aiohttp.ClientError):
+        except (TimeoutError, aiohttp.ClientError):
             _LOGGER.error("Can't resolve CNAME for %s", hostname)
         return []
 
     async def _custom_domain_dns_configuration_is_valid(
-        self, instance_domain: str, custom_domain: str
+        self,
+        instance_domain: str,
+        custom_domain: str,
     ) -> bool:
         """Validate custom domain."""
         # Check primary entry
@@ -553,12 +574,9 @@ class RemoteUI:
             return False
 
         # Check LE entry
-        if f"_acme-challenge.{instance_domain}" not in await self._check_cname(
-            f"_acme-challenge.{custom_domain}"
-        ):
-            return False
-
-        return True
+        return f"_acme-challenge.{instance_domain}" in await self._check_cname(
+            f"_acme-challenge.{custom_domain}",
+        )
 
     async def _should_renew_certificates(self) -> bool:
         """Check if certificates should be renewed."""
@@ -590,9 +608,10 @@ class RemoteUI:
         for alias in check_alias:
             # Check primary entry
             if not await self._custom_domain_dns_configuration_is_valid(
-                self.instance_domain, alias
+                self.instance_domain,
+                alias,
             ):
-                bad_alias.append(alias)
+                bad_alias.append(alias)  # noqa: PERF401
 
         if not bad_alias:
             # No bad configuration detected
@@ -622,3 +641,9 @@ class RemoteUI:
             self._acme.email,
         )
         return True
+
+    async def reset_acme(self) -> None:
+        """Reset the ACME client."""
+        if not self._acme:
+            return
+        await self._acme.reset_acme()

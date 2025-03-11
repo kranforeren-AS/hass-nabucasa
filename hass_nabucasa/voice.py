@@ -1,11 +1,13 @@
 """Voice handler with Azure."""
+
 from __future__ import annotations
 
+from collections.abc import AsyncIterable
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, AsyncIterable
 import logging
-import xml.etree.ElementTree as ET
+from typing import TYPE_CHECKING
+from xml.etree import ElementTree as ET
 
 from aiohttp.hdrs import ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT
 import attr
@@ -1228,15 +1230,13 @@ class Voice:
 
     def _validate_token(self) -> bool:
         """Validate token outside of coroutine."""
-        if self._valid and utcnow() < self._valid:
-            return True
-        return False
+        return bool(self._valid and utcnow() < self._valid)
 
     async def _update_token(self) -> None:
         """Update token details."""
         resp = await cloud_api.async_voice_connection_details(self.cloud)
         if resp.status != 200:
-            raise VoiceTokenError()
+            raise VoiceTokenError
 
         data = await resp.json()
         self._token = data["authorized_key"]
@@ -1252,7 +1252,7 @@ class Voice:
         language: str,
         force_token_renewal: bool = False,
     ) -> STTResponse:
-        """Stream Audio to Azure congnitive instance."""
+        """Stream Audio to Azure cognitive instance."""
         if language not in STT_LANGUAGES:
             raise VoiceError(f"Language {language} not supported")
 
@@ -1283,13 +1283,15 @@ class Voice:
                 )
             if resp.status not in (200, 201):
                 raise VoiceReturnError(
-                    f"Error processing {language} speech: {resp.status} {await resp.text()}"
+                    f"Error processing {language} speech: "
+                    f"{resp.status} {await resp.text()}",
                 )
             data = await resp.json()
 
         # Parse Answer
         return STTResponse(
-            data["RecognitionStatus"] == "Success", data.get("DisplayText")
+            data["RecognitionStatus"] == "Success",
+            data.get("DisplayText"),
         )
 
     async def process_tts(
@@ -1363,6 +1365,7 @@ class Voice:
                 )
             if resp.status not in (200, 201):
                 raise VoiceReturnError(
-                    f"Error receiving TTS with {language}/{voice}: {resp.status} {await resp.text()}"
+                    f"Error receiving TTS with {language}/{voice}: "
+                    f"{resp.status} {await resp.text()}",
                 )
             return await resp.read()

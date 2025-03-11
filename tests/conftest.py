@@ -1,31 +1,36 @@
 """Set up some common test helper things."""
+
 import asyncio
 import logging
-from unittest.mock import patch, MagicMock, PropertyMock, AsyncMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from aiohttp import web
 import pytest
 
-from .utils.aiohttp import mock_aiohttp_client
 from .common import MockClient
+from .utils.aiohttp import mock_aiohttp_client
 
 logging.basicConfig(level=logging.DEBUG)
 
 
+@pytest.fixture(name="loop")
+async def loop_fixture():
+    """Return the event loop."""
+    return asyncio.get_running_loop()
+
+
 @pytest.fixture
-async def aioclient_mock(event_loop):
+async def aioclient_mock(loop):
     """Fixture to mock aioclient calls."""
-    loop = event_loop
     with mock_aiohttp_client(loop) as mock_session:
         yield mock_session
 
 
 @pytest.fixture
-async def cloud_mock(event_loop, aioclient_mock):
+async def cloud_mock(loop, aioclient_mock, tmp_path):
     """Yield a simple cloud mock."""
-    loop = event_loop
     cloud = MagicMock(name="Mock Cloud", is_logged_in=True)
-    cloud.run_task = loop.create_task
 
     def _executor(call, *args):
         """Run executor."""
@@ -34,15 +39,20 @@ async def cloud_mock(event_loop, aioclient_mock):
     cloud.run_executor = _executor
 
     cloud.websession = aioclient_mock.create_session(loop)
-    cloud.client = MockClient(loop, cloud.websession)
+    cloud.client = MockClient(tmp_path, loop, cloud.websession)
 
-    async def update_token(id_token, access_token, refresh_token=None):
+    async def update_token(
+        id_token,
+        access_token,
+        refresh_token=None,
+    ):
         cloud.id_token = id_token
         cloud.access_token = access_token
         if refresh_token is not None:
             cloud.refresh_token = refresh_token
 
     cloud.update_token = MagicMock(side_effect=update_token)
+    cloud.ensure_not_connected = AsyncMock()
 
     yield cloud
 
@@ -58,15 +68,15 @@ def auth_cloud_mock(cloud_mock):
 
 
 @pytest.fixture
-def cloud_client(cloud_mock):
+def cloud_client(cloud_mock: MagicMock) -> MockClient:
     """Return cloud client impl."""
-    yield cloud_mock.client
+    return cast(MockClient, cloud_mock.client)
 
 
 @pytest.fixture
 def mock_cognito():
     """Mock warrant."""
-    with patch("hass_nabucasa.auth.CognitoAuth._cognito") as mock_cog:
+    with patch("hass_nabucasa.auth.CognitoAuth._create_cognito_client") as mock_cog:
         yield mock_cog()
 
 
@@ -92,7 +102,8 @@ def mock_iot_client(cloud_mock):
     # Trigger cancelled error to avoid reconnect.
     org_websession = cloud_mock.websession
     with patch(
-        "hass_nabucasa.iot_base.BaseIoT._wait_retry", side_effect=asyncio.CancelledError
+        "hass_nabucasa.iot_base.BaseIoT._wait_retry",
+        side_effect=asyncio.CancelledError,
     ):
         websession.ws_connect.side_effect = AsyncMock(return_value=client)
         cloud_mock.websession = websession
@@ -116,7 +127,8 @@ async def ws_server(aiohttp_client):
         async def websocket_handler(request):
             ws = web.WebSocketResponse()
             await ws.prepare(request)
-            # Send a message to trigger IoTBase with `mark_connected_after_first_message`
+            # Send a message to trigger IoTBase with
+            # `mark_connected_after_first_message`
             await ws.send_json({"msgid": 0, "handler": "hello"})
 
             async for msg in ws:

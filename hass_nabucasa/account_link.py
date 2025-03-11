@@ -1,4 +1,5 @@
 """Helpers to help with account linking."""
+
 from __future__ import annotations
 
 import asyncio
@@ -62,7 +63,7 @@ class AuthorizeAccountHelper:
         _LOGGER.debug("Opening connection for %s", self.service)
 
         self._client = await self.cloud.client.websession.ws_connect(
-            f"https://{self.cloud.account_link_server}/v1"
+            f"https://{self.cloud.account_link_server}/v1",
         )
         await self._client.send_json({"service": self.service})
 
@@ -100,7 +101,7 @@ class AuthorizeAccountHelper:
 
         if "error" in response:
             if response["error"] == ERR_TIMEOUT:
-                raise asyncio.TimeoutError()
+                raise TimeoutError
 
             raise AccountLinkException(response["error"])
 
@@ -128,9 +129,8 @@ async def async_fetch_available_services(
     cloud: Cloud[_ClientT],
 ) -> list[dict[str, Any]]:
     """Fetch available services."""
-
     resp = await cloud.client.websession.get(
-        f"https://{cloud.account_link_server}/services"
+        f"https://{cloud.account_link_server}/services",
     )
     resp.raise_for_status()
     content: list[dict[str, Any]] = await resp.json()

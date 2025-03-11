@@ -1,4 +1,5 @@
 """Module to handle messages from Home Assistant cloud."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +29,16 @@ class ErrorMessage(Exception):
 
     def __init__(self, error: Any) -> None:
         """Initialize Error Message."""
-        super().__init__(self, "Error in Cloud")
+        super().__init__("Error in Cloud")
+        self.error = error
+
+
+class HandlerError(Exception):
+    """Exception raised when the handler failed."""
+
+    def __init__(self, error: str) -> None:
+        """Initialize Error Message."""
+        super().__init__("Error in handler")
         self.error = error
 
 
@@ -54,6 +64,11 @@ class CloudIoT(iot_base.BaseIoT):
         return __name__
 
     @property
+    def ws_heartbeat(self) -> float | None:
+        """Server to connect to."""
+        return 300
+
+    @property
     def ws_server_url(self) -> str:
         """Server to connect to."""
         return f"wss://{self.cloud.relayer_server}/websocket"
@@ -62,7 +77,7 @@ class CloudIoT(iot_base.BaseIoT):
         """Start the CloudIoT server."""
         if self.cloud.subscription_expired:
             return
-        self.cloud.run_task(self.connect())
+        asyncio.create_task(self.connect())
 
     async def async_send_message(
         self,
@@ -79,7 +94,7 @@ class CloudIoT(iot_base.BaseIoT):
 
         try:
             await self.async_send_json_message(
-                {"msgid": msgid, "handler": handler, "payload": payload}
+                {"msgid": msgid, "handler": handler, "payload": payload},
             )
 
             if expect_answer and fut is not None:
@@ -99,7 +114,7 @@ class CloudIoT(iot_base.BaseIoT):
                 response_handler.set_exception(ErrorMessage(msg["error"]))
             return
 
-        self.cloud.run_task(self._async_handle_handler_message(msg))
+        asyncio.create_task(self._async_handle_handler_message(msg))
 
     async def _async_handle_handler_message(self, message: dict[str, Any]) -> None:
         """Handle incoming IoT message."""
@@ -109,7 +124,7 @@ class CloudIoT(iot_base.BaseIoT):
             handler = HANDLERS.get(message["handler"])
 
             if handler is None:
-                raise UnknownHandler()
+                raise UnknownHandler
 
             result = await handler(self.cloud, message.get("payload"))
 
@@ -121,6 +136,10 @@ class CloudIoT(iot_base.BaseIoT):
 
         except UnknownHandler:
             response["error"] = "unknown-handler"
+
+        except HandlerError as err:
+            self._logger.warning("Error handling message: %s", err.error)
+            response["error"] = err.error
 
         except Exception:  # pylint: disable=broad-except
             self._logger.exception("Error handling message")
@@ -156,7 +175,8 @@ async def async_handle_system(cloud: Cloud[_ClientT], payload: dict[str, Any]) -
 
 @HANDLERS.register("alexa")
 async def async_handle_alexa(
-    cloud: Cloud[_ClientT], payload: dict[str, Any]
+    cloud: Cloud[_ClientT],
+    payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Handle an incoming IoT message for Alexa."""
     return await cloud.client.async_alexa_message(payload)
@@ -164,7 +184,8 @@ async def async_handle_alexa(
 
 @HANDLERS.register("google_actions")
 async def async_handle_google_actions(
-    cloud: Cloud[_ClientT], payload: dict[str, Any]
+    cloud: Cloud[_ClientT],
+    payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Handle an incoming IoT message for Google Actions."""
     return await cloud.client.async_google_message(payload)
@@ -179,10 +200,11 @@ async def async_handle_cloud(cloud: Cloud[_ClientT], payload: dict[str, Any]) ->
         # Log out of Home Assistant Cloud
         await cloud.logout()
         _LOGGER.error(
-            "You have been logged out from Home Assistant cloud: %s", payload["reason"]
+            "You have been logged out from Home Assistant cloud: %s",
+            payload["reason"],
         )
     elif action == "disconnect_remote":
-        # Disconect Remote connection
+        # Disconnect Remote connection
         await cloud.remote.disconnect(clear_snitun_token=True)
     elif action == "evaluate_remote_security":
 
@@ -208,7 +230,7 @@ async def async_handle_cloud(cloud: Cloud[_ClientT], payload: dict[str, Any]) ->
 @HANDLERS.register("remote_sni")
 async def async_handle_remote_sni(
     cloud: Cloud[_ClientT],
-    payload: dict[str, Any],
+    payload: dict[str, Any],  # noqa: ARG001
 ) -> dict[str, Any]:
     """Handle remote UI requests for cloud."""
     await cloud.client.async_cloud_connect_update(True)
@@ -226,7 +248,8 @@ async def async_handle_connection_info(
 
 @HANDLERS.register("webhook")
 async def async_handle_webhook(
-    cloud: Cloud[_ClientT], payload: dict[str, Any]
+    cloud: Cloud[_ClientT],
+    payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Handle an incoming IoT message for cloud webhooks."""
     return await cloud.client.async_webhook_message(payload)

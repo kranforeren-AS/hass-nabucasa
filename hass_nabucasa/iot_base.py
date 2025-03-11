@@ -1,22 +1,24 @@
 """Base class to keep a websocket connection open to a server."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import dataclasses
 import logging
 import pprint
 import random
 from socket import gaierror
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import (
     ClientError,
+    ClientWebSocketResponse,
     WSMessage,
     WSMsgType,
     WSServerHandshakeError,
     client_exceptions,
     hdrs,
-    ClientWebSocketResponse,
 )
 
 from .auth import CloudError
@@ -74,6 +76,11 @@ class BaseIoT:
         raise NotImplementedError
 
     @property
+    def ws_heartbeat(self) -> float | None:
+        """Server to connect to."""
+        return None
+
+    @property
     def ws_server_url(self) -> str:
         """Server to connect to."""
         raise NotImplementedError
@@ -97,7 +104,8 @@ class BaseIoT:
         self._on_connect.append(on_connect_cb)
 
     def register_on_disconnect(
-        self, on_disconnect_cb: Callable[[], Awaitable[None]]
+        self,
+        on_disconnect_cb: Callable[[], Awaitable[None]],
     ) -> None:
         """Register an async on_disconnect callback."""
         self._on_disconnect.append(on_disconnect_cb)
@@ -164,8 +172,8 @@ class BaseIoT:
     async def _wait_retry(self) -> None:
         """Wait until it's time till the next retry."""
         # Sleep 2^tries + 0…tries*3 seconds between retries
-        self.retry_task = self.cloud.run_task(
-            asyncio.sleep(2 ** min(9, self.tries) + random.randint(0, self.tries * 3))
+        self.retry_task = asyncio.create_task(
+            asyncio.sleep(2 ** min(9, self.tries) + random.randint(0, self.tries * 3)),
         )
         await self.retry_task
         self.retry_task = None
@@ -176,14 +184,17 @@ class BaseIoT:
             await self.cloud.auth.async_check_token()
         except CloudError as err:
             self._logger.warning(
-                "Cannot connect because unable to refresh token: %s", err
+                "Cannot connect because unable to refresh token: %s",
+                err,
             )
             return
 
         if self.require_subscription and self.cloud.subscription_expired:
             self._logger.debug("Cloud subscription expired. Cancelling connecting.")
             self.cloud.client.user_message(
-                "cloud_subscription_expired", "Home Assistant Cloud", MESSAGE_EXPIRATION
+                "cloud_subscription_expired",
+                "Home Assistant Cloud",
+                MESSAGE_EXPIRATION,
             )
             self.close_requested = True
             return
@@ -200,6 +211,7 @@ class BaseIoT:
         try:
             self.client = await self.cloud.websession.ws_connect(
                 self.ws_server_url,
+                heartbeat=self.ws_heartbeat,
                 headers={
                     hdrs.AUTHORIZATION: f"Bearer {self.cloud.id_token}",
                     hdrs.USER_AGENT: self.cloud.client.client_name,
@@ -213,7 +225,12 @@ class BaseIoT:
                 msg: WSMessage | None | str = None
                 try:
                     msg = await self.client.receive(55)
-                except asyncio.TimeoutError:
+                except TimeoutError:
+                    # This is logged as info instead of warning because when
+                    # this hits there is not really much that can be done about it.
+                    # But the context is still valuable to have while
+                    # troubleshooting.
+                    self._logger.info("Timeout while waiting to receive message")
                     await self.client.ping()
                     continue
 
@@ -222,8 +239,9 @@ class BaseIoT:
                     disconnect_reason = f"Closed by server. {msg.extra} ({msg.data})"
                     break
 
-                # Do this inside the loop because if 2 clients are connected, it can happen that
-                # we get connected with valid auth, but then server decides to drop our connection.
+                # Do this inside the loop because if 2 clients are connected,
+                # it can happen that we get connected with valid auth,
+                # but then server decides to drop our connection.
                 if self.state != STATE_CONNECTED:
                     await self._connected()
 
@@ -243,7 +261,8 @@ class BaseIoT:
 
                 if self._logger.isEnabledFor(logging.DEBUG):
                     self._logger.debug(
-                        "Received message:\n%s\n", pprint.pformat(msg_content)
+                        "Received message:\n%s\n",
+                        pprint.pformat(msg_content),
                     )
 
                 try:

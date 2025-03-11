@@ -1,10 +1,12 @@
 """Test the helper method for writing tests."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from pathlib import Path
-import tempfile
-from typing import Any, Coroutine, Literal
+import threading
+from typing import Any, Literal
 from unittest.mock import Mock
 
 from hass_nabucasa.client import CloudClient
@@ -13,7 +15,7 @@ from hass_nabucasa.client import CloudClient
 class MockClient(CloudClient):
     """Interface class for Home Assistant."""
 
-    def __init__(self, loop, websession):
+    def __init__(self, base_path, loop, websession) -> None:
         """Initialize MockClient."""
         self._loop = loop
         self._websession = websession
@@ -31,15 +33,13 @@ class MockClient(CloudClient):
         self.mock_connection_info = []
 
         self.mock_return = []
-        self._base_path = None
+        self._base_path = base_path
 
         self.pref_should_connect = False
 
     @property
-    def base_path(self):
+    def base_path(self) -> Path:
         """Return path to base dir."""
-        if self._base_path is None:
-            self._base_path = Path(tempfile.gettempdir())
         return self._base_path
 
     @property
@@ -89,6 +89,10 @@ class MockClient(CloudClient):
 
     def user_message(self, identifier: str, title: str, message: str) -> None:
         """Create a message for user to UI."""
+        if self.loop._thread_id != threading.get_ident():
+            raise RuntimeError(
+                "`CloudClient.user_message` should be called from the event loop"
+            )
         self.mock_user.append((identifier, title, message))
 
     def dispatcher_message(self, identifier: str, data: Any = None) -> None:
@@ -136,20 +140,21 @@ class MockClient(CloudClient):
         placeholders: dict[str, str] | None = None,
         severity: Literal["error", "warning"] = "warning",
     ) -> None:
+        """Create a repair issue."""
         self.mock_repairs.append(
             {
                 "identifier": identifier,
                 "translation_key": translation_key,
                 "placeholders": placeholders,
                 "severity": severity,
-            }
+            },
         )
 
 
 class MockAcme:
     """Mock AcmeHandler."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize MockAcme."""
         self.is_valid = True
         self.call_issue = False
@@ -200,7 +205,7 @@ class MockAcme:
         """Hardening files."""
         self.call_hardening = True
 
-    def __call__(self, *args):
+    def __call__(self, *args) -> MockAcme:
         """Init."""
         self.init_args = args
         return self
@@ -209,7 +214,7 @@ class MockAcme:
 class MockSnitun:
     """Mock Snitun client."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize MockAcme."""
         self.call_start = False
         self.call_stop = False
@@ -249,7 +254,11 @@ class MockSnitun:
         self.call_stop = True
 
     async def connect(
-        self, token: bytes, aes_key: bytes, aes_iv: bytes, throttling=None
+        self,
+        token: bytes,
+        aes_key: bytes,
+        aes_iv: bytes,
+        throttling=None,
     ):
         """Connect snitun."""
         self.call_connect = True
@@ -260,7 +269,7 @@ class MockSnitun:
         self.wait_task.set()
         self.call_disconnect = True
 
-    def __call__(self, *args, **kwarg):
+    def __call__(self, *args, **kwarg) -> MockSnitun:
         """Init."""
         self.init_args = args
         self.init_kwarg = kwarg

@@ -1,4 +1,5 @@
 """Constants for the hass-nabucasa."""
+
 from __future__ import annotations
 
 CONFIG_DIR = ".cloud"
@@ -22,7 +23,6 @@ DEFAULT_SERVERS: dict[str, dict[str, str]] = {
         "account_link": "account-link.nabucasa.com",
         "accounts": "accounts.nabucasa.com",
         "acme": "acme-v02.api.letsencrypt.org",
-        "alexa": "alexa-api.nabucasa.com",
         "cloudhook": "webhooks-api.nabucasa.com",
         "relayer": "cloud.nabucasa.com",
         "remotestate": "remotestate.nabucasa.com",
@@ -54,9 +54,16 @@ using the service.
 
 MESSAGE_REMOTE_READY = """
 Your remote access is now available.
-You can manage your connectivity on the [Cloud Panel](/config/cloud) or with our [Portal](account.nabucasa.com/).
+You can manage your connectivity on the
+[Cloud panel](/config/cloud) or with our [portal](https://account.nabucasa.com/).
 """
 
 MESSAGE_REMOTE_SETUP = """
-Unable to create a certificate. We will automatically retry it and notify you when it's available.
+Unable to create a certificate. We will automatically
+retry it and notify you when it's available.
+"""
+
+MESSAGE_LOAD_CERTIFICATE_FAILURE = """
+Unable to load the certificate. We will automatically
+recreate it and notify you when it's available.
 """
