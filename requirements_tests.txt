@@ -1,0 +1,11 @@
+black==24.3.0
+flake8==6.1.0
+mypy==1.7.1
+pylint==3.0.2
+pytest-aiohttp==1.0.5
+pytest-timeout==2.2.0
+pytest==7.4.3
+types_atomicwrites==1.4.5.1
+types_pyOpenSSL==23.3.0.0
+xmltodict==0.13.0
+syrupy==4.6.0
